@@ -73,7 +73,8 @@ class Farmer(JSBASE):
         out.res = list({n.location.country for n in nodes if n.location.country})
         return out
 
-    def node_find(self, country, farmer_name, cores_min_nr, mem_min_mb, ssd_min_gb, hd_min_gb, nr_max,node_zos_id, schema_out):
+    def node_find(self, country, farmer_name, cores_min_nr, mem_min_mb, ssd_min_gb, hd_min_gb, nr_max, node_zos_id,
+                  schema_out):
         """
         ```in
         country = "" (S)
@@ -284,40 +285,28 @@ class Farmer(JSBASE):
         out.res = gws
         return out
 
-    def web_gateway_add_host(self, jwttoken, web_gateway, rule_name, domains, backends):
+    def web_gateway_add_host(self, jwttoken, web_gateway, domain, backends):
         """
         ```in
         jwttoken = (S)
         web_gateway = (O) !threefold.grid.webgateway
-        rule_name = "" (S)
-        domains = [] (LS)
+        domain = "" (S)
         backends = [] (LS)
         ```
         
         will configure the a virtual_host in the selected web gateway
-        :param rule_name: the rule name for this config to be referred to afterwards
         :param jwttoken: jwt for authentication
         :param web_gateway: the web gateway object we need to add host in it
-        :param domains: list of domains we need to register e.g. ["threefold.io", "www.threefold.io"]
+        :param domain: the domain we need to register
         :param backends: list of backends that the domains will point to e.g. ['10.10.100.10:80', '10.10.100.11:80']
         """
         user = jwt.get_unverified_claims(jwttoken)['username']
-        self.capacity_planner.web_gateway_add_host(web_gateway, rule_name, domains, backends)
-
-        # Check if the rule already exist, so we need to update it or create a new one
-        res = self.wgw_rule_model.index.select().where(self.wgw_rule_model.index.user == user).execute()
-        rules = [self.wgw_rule_model.get(rule.id) for rule in res]
-        for user_rule in rules:
-            if user_rule.rule_name == rule_name and user_rule.webgateway_name == web_gateway['name']:
-                rule = user_rule
-                break
-        else:
-            rule = self.wgw_rule_model.new()
-            rule.rule_name = rule_name
-            rule.webgateway_name = web_gateway["name"]
-            rule.user = user
-
-        rule.domains = domains
+        service = self.capacity_planner.web_gateway_add_host(web_gateway['service_name'], domain, backends)
+        rule = self.wgw_rule_model.new()
+        rule.rule_name = service.name
+        rule.webgateway_name = web_gateway["name"]
+        rule.user = user
+        rule.domain = domain
         rule.backends = backends
         self.wgw_rule_model.set(rule)
         return
@@ -390,63 +379,45 @@ class Farmer(JSBASE):
         self.farmer_model.set(new_farmer)
         return
 
-    def web_gateway_register(self, jwttoken, etcd_host, etcd_port, etcd_secret, farmer_name, name,
-                             pubip4, pubip6, country, location, description, schema_out):
+    def web_gateway_register(self, jwttoken, name, service_name, description, master_domain, schema_out):
         """
         ```in
         jwttoken = (S)
-        etcd_host = (S)
-        etcd_port = (S)
-        etcd_secret = (S)
-        farmer_name = (S)
         name = "" (S)
-        country = "" (S)
-        location = "" (S)
         description = "" (S)
-        pubip4 = [] (LS)
-        pubip6 = [] (LS)
+        service_name = "" (S)
+        master_domain = "" (S)
         ```
         ```out
         res = (O) !threefold.grid.webgateway
         ```
 
-        allows a farmer to register
+        allows a farmer to register a web gateway
         :param jwttoken: is token as used in IYO
-        :param etcd_host: the etcd host which allows this bot to configure the required forwards
-        :param etcd_port: the etcd server port
-        :param etcd_secret is the secret for the etcd connection
-        :param farmer_name: the owner farmer of this gateway
-        :param pubip4: comma separated list of public ip addr, ip v4
-        :param pubip6: comma separated list of public ip addr, ip v6
         :param name: chosen name for the webgateway
-        :param country: country as used in self.countries_get...
-        :param location: chosen location name
+        :param service_name: chosen name for the webgateway service in zrobot
+        :param master_domain: master domain for the web gateway
         :param description: web gateway extra description
         :return:
         """
         new_gateway = self.wgw_model.new()
         new_gateway.name = name
-        new_gateway.etcd_host = etcd_host
-        new_gateway.etcd_port = etcd_port
-        new_gateway.etcd_secret = etcd_secret
-        new_gateway.country = country
-        new_gateway.location = location
-        for farmer in self.farmer_model.get_all():
-            if farmer.name == farmer_name:
-                new_gateway.farmer_id = farmer.id
-        new_gateway.pubip4 = pubip4
-        new_gateway.pubip6 = pubip6
+        new_gateway.service_name = service_name
         new_gateway.description = description
+        new_gateway.master_domain = master_domain
         new_gateway = self.wgw_model.set(new_gateway)
         out = schema_out.new()
         out.res = new_gateway
         return out
 
-    def s3_reserve(self, name, management_network_id, size, farmer_name, data_shards, parity_shards, storage_type,
-                   minio_login, minio_password, ns_name, ns_password, zt_token, schema_out):
+    def s3_reserve(self, name, management_network_id, domain, web_gateway_service,
+                   size, farmer_name, data_shards, parity_shards, storage_type,
+                   minio_login, minio_password, ns_name, ns_password, zt_token):
         """
         ```in
         name = (S)
+        domain = (S)
+        web_gateway_service = (S)
         management_network_id = (S)
         size = (I)
         farmer_name = (S)
@@ -459,11 +430,9 @@ class Farmer(JSBASE):
         ns_password = "password" (S)
         zt_token = (S)
         ```
-
-        ```out
-        res = (S)
-        ```
         :param name:
+        :param domain:
+        :param web_gateway_service:
         :param management_network_id:
         :param size:
         :param farmer_name:
@@ -478,11 +447,10 @@ class Farmer(JSBASE):
         :param schema_out:
         :return:
         """
-        result = self.capacity_planner.s3_reserve(name=name, management_network_id=management_network_id, size=size,
-                                                  farmer_name=farmer_name, zt_token=zt_token, data_shards=data_shards,
-                                                  parity_shards=parity_shards, storage_type=storage_type,
-                                                  minio_login=minio_login, minio_password=minio_password,
-                                                  ns_name=ns_name, ns_password=ns_password)
-        out = schema_out.new()
-        out.res = str(result)
-        return out
+        self.capacity_planner.s3_reserve(name=name, management_network_id=management_network_id, size=size,
+                                         domain=domain, web_gateway_service=web_gateway_service,
+                                         farmer_name=farmer_name, zt_token=zt_token, data_shards=data_shards,
+                                         parity_shards=parity_shards, storage_type=storage_type,
+                                         minio_login=minio_login, minio_password=minio_password,
+                                         ns_name=ns_name, ns_password=ns_password)
+        return

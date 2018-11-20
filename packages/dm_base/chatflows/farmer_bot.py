@@ -116,16 +116,12 @@ def chat(bot):
         for gateway in web_gateways:
             if gateway.name == web_gateway_name:
                 web_gateway = gateway
-        rule_name = bot.string_ask("Choose a forwarding rule name that you can refer to afterwards:",
-                                   validate={"required": True})
-        domains = bot.string_ask("Enter comma separated domains to configure "
-                                 "i.e. www.test.com,test.com", validate={"required": True})
-        domains = [domain.strip() for domain in domains.split(",")]
+        domain = bot.string_ask("Enter domain you need to configure i.e. mywebsite.test.com",
+                                validate={"required": True})
         backends = bot.string_ask("Enter comma separated backends you need to point to: "
                                   "i.e. http://192.168.1.1:8000,http://192.168.1.2:5000", validate={"required": True})
         backends = [backend.strip() for backend in backends.split(",")]
-        gedis_client.farmer.web_gateway_add_host(jwttoken, web_gateway=web_gateway, rule_name=rule_name,
-                                                 domains=domains, backends=backends)
+        gedis_client.farmer.web_gateway_add_host(jwttoken, web_gateway=web_gateway, domain=domain, backends=backends)
 
     def web_gateway_list_hosts():
         jwttoken = bot.string_ask("Please enter your JWT, "
@@ -145,24 +141,13 @@ def chat(bot):
         jwttoken = bot.string_ask("Please enter your JWT, "
                                   "(click <a target='_blank' href='/client'>here</a> to get one)",
                                   validate={"required": True})
-        etcd_host = bot.string_ask("Enter etcd ip:", validate={"required": True})
-        etcd_port = bot.string_ask("Enter etcd port:", validate={"required": True})
-        etcd_secret = bot.password_ask("Enter etcd secret:", validate={"required": True})
-        farmer_name = bot.drop_down_choice("choose farmer:", [farmer.name for farmer in farmers])
         name = bot.string_ask("Enter gateway name:", validate={"required": True})
-        pubip4 = bot.string_ask("Enter comma separated public IPsV4 i.e. (192.168.20.3,192.168.30.3):",
-                                validate={"required": True})
-        pubip4 = [ip.strip() for ip in pubip4.split(",")] if pubip4 else []
-        pubip6 = bot.string_ask("Enter comma separated public IPsV6 "
-                                "i.e. (0:0:0:0:0:ffff:c0a8:114,0:0:0:0:0:ffff:c0a8:115):")
-        pubip6 = [ip.strip() for ip in pubip6.split(",")] if pubip6 else []
-        country = bot.drop_down_choice("choose country:", [country for country in countries])
-        location = None  # what is the difference between location and country
+        service_name = bot.string_ask("Enter gateway service name that you have installed in zrobot:",
+                                      validate={"required": True})
+        master_domain = bot.string_ask("Enter gateway master domain:", validate={"required": True})
         description = bot.string_ask("Additional description?")
-        gedis_client.farmer.web_gateway_register(jwttoken=jwttoken, etcd_host=etcd_host, etcd_port=etcd_port,
-                                                 etcd_secret=etcd_secret, farmer_name=farmer_name, name=name,
-                                                 pubip4=pubip4, pubip6=pubip6, country=country, location=location,
-                                                 description=description)
+        gedis_client.farmer.web_gateway_register(jwttoken=jwttoken, name=name, service_name=service_name,
+                                                 description=description, master_domain=master_domain)
 
     def zdb_reserve(jwttoken, node):
         zdb_name = bot.string_ask("Please enter your ZDB name:")
@@ -217,7 +202,7 @@ def chat(bot):
                     "data_shards": 1,
                     "parity_shards": 1,
                 },
-            "plan 2  (1 data shard and 1 parity shard)":
+            "plan 2  (4 data shard and 2 parity shard)":
                 {
                     "data_shards": 4,
                     "parity_shards": 2
@@ -226,27 +211,35 @@ def chat(bot):
         # generate random namespace login and password
         ns_name = j.data.idgenerator.generateXCharID(8)
         ns_password = j.data.idgenerator.generateXCharID(16)
-
-
+        web_gateways = gedis_client.farmer.web_gateways_get().res
+        web_gateway_name = bot.drop_down_choice("Choose the web gateway you need to add your domain to it: ",
+                                                [web_gateway.name for web_gateway in web_gateways],
+                                                validate={"required": True})
+        web_gateway = {}
+        for gateway in web_gateways:
+            if gateway.name == web_gateway_name:
+                web_gateway = gateway
         name = bot.string_ask("Please enter your s3 name", validate={"required": True})
+        domain = "{}.{}".format(name, web_gateway.master_domain)
         zt_token = bot.string_ask("Enter your zerotier token:", validate={"required": True})
         zerotier_network = bot.string_ask("Enter the zerotier network id you need the s3 to join:",
                                           validate={"required": True})
         size = bot.int_ask("Enter the total size of S3 in GB", default=10, validate={"required": True})
 
-        plan = bot.single_choice("Choose a plan", data_plans.keys())
+        plan = bot.single_choice("Choose a plan", list(data_plans.keys()))
         data_shards = data_plans[plan]['data_shards']
         parity_shards = data_plans[plan]['parity_shards']
 
         minio_login = bot.string_ask("Enter minio login name", default="admin", validate={"required": True})
         minio_password = bot.password_ask("Enter minio password", validate={"required": True, "length_min": 8})
-        res = gedis_client.farmer.s3_reserve(name=name, management_network_id=zerotier_network, size=size,
-                                             farmer_name=farmer_name, data_shards=data_shards,
-                                             parity_shards=parity_shards, zt_token=zt_token,
-                                             storage_type=storage_type, minio_login=minio_login,
-                                             minio_password=minio_password,
-                                             ns_name=ns_name, ns_password=ns_password).res
-        bot.md_show(res)
+        gedis_client.farmer.s3_reserve(name=name, management_network_id=zerotier_network, size=size,
+                                       domain=domain, web_gateway_service=web_gateway.service_name,
+                                       farmer_name=farmer_name, data_shards=data_shards,
+                                       parity_shards=parity_shards, zt_token=zt_token,
+                                       storage_type=storage_type, minio_login=minio_login,
+                                       minio_password=minio_password,
+                                       ns_name=ns_name, ns_password=ns_password)
+        bot.md_show("You can access your s3 using: {}".format(domain))
 
     def get_gedis_client():
         global gedis_client, countries, farmers

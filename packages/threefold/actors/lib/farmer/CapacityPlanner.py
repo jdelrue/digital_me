@@ -199,75 +199,44 @@ class CapacityPlanner(JSBASE):
         zdb_service.delete()
         return
 
-    def web_gateway_add_host(self, web_gateway, rule_name, domains, backends):
+    def web_gateway_add_host(self, web_gateway_service, domain, backends=None, name=None):
         """
         Register new domain into web gateway
-        :param web_gateway: web gateway dict from web gateway model to be used to get services
-        :param domains: list of domains to configure
-        :param rule_name: the rule convenient name that we can refer to afterwards
-        :param backends: list of `ip:port` for the vm service we need to serve (i.e. [192.168.1.2:80])
+        :param web_gateway_service: web gateway service name
+        :param domain: domain to be configured
+        :param name: the rule convenient name that we can refer to afterwards
+        :param backends: list of `scheme://ip:port` for the vm service we need to serve (i.e. ["http://192.168.1.2:80"])
         """
-        # Get etcd client
-        etcd_client = self.get_etcd_client(web_gateway)
+        if not backends:
+            backends = []
+        robot = self.get_3bot_robot()
+        data = {
+            "webGateway": web_gateway_service,
+            "domain": domain,
+            "servers": backends
+        }
+        domain_service = robot.services.find_or_create("reverse_proxy", service_name=name, data=data)
+        domain_service.schedule_action("install").wait(die=True)
+        return domain_service
 
-        # register the domains for coredns use
-        # The key for coredns should start with path(/hosts) and the domain reversed
-        # i.e. test.com => /hosts/com/test
-        for domain in domains:
-            domain_parts = domain.strip().split('.')
-            for i, ip in enumerate(web_gateway['pubip4']):
-                key = "/hosts/{}/x{}".format("/".join(domain_parts[::-1]), i + 1)
-                value = '{{"host":"{}","ttl":3600}}'.format(ip)
-                etcd_client.put(key, value)
-
-        # register the domain for traefik use
-        for i, backend in enumerate(backends):
-            backend_key = "/traefik/backends/{}/servers/server{}/url".format(rule_name, i + 1)
-            backend_value = "http://{}".format(backend)
-            etcd_client.put(backend_key, backend_value)
-
-        frontend_key1 = "/traefik/frontends/{}/backend".format(rule_name)
-        frontend_value1 = rule_name
-        etcd_client.put(frontend_key1, frontend_value1)
-
-        frontend_key2 = "/traefik/frontends/{}/routes/base/rule".format(rule_name)
-        frontend_value2 = "Host:{}".format(",".join(domains))
-        etcd_client.put(frontend_key2, frontend_value2)
-        return
-
-    def web_gateway_delete_host(self, web_gateway, rule_name):
+    def web_gateway_delete_host(self, rule_name):
         """
         delete a domain from web gateway
-        :param web_gateway: web gateway dict from web gateway model to be used to get services
         :param rule_name: the rule we need to delete
         """
-        # Get etcd client
-        etcd_client = self.get_etcd_client(web_gateway)
-
-        # delete configured domains with this rule_name
-        domains_key = "/traefik/frontends/{}/routes/base/rule".format(rule_name)
-        domains_value = etcd_client.get(domains_key)
-        if not domains_value:
-            return
-        domains = domains_value[5:]  # domains_value: "Host:test.com,www.test.com"
-        for domain in domains.split(","):
-            domain_parts = domain.strip().split('.')
-            key = "/hosts/{}".format("/".join(domain_parts[::-1]))
-            etcd_client.api.delete_prefix(key)
-
-        # remove backend, frontend from traefik etcd config
-        backend_key = "/traefik/backends/{}".format(rule_name)
-        frontend_key = "/traefik/frontends/{}".format(rule_name)
-        etcd_client.api.delete_prefix(backend_key)
-        etcd_client.api.delete_prefix(frontend_key)
+        robot = self.get_3bot_robot()
+        domain_service = robot.services.get(template_uid="reverse_proxy", name=rule_name)
+        domain_service.delete()
         return
 
-    def s3_reserve(self, name, management_network_id, size, farmer_name, zt_token, data_shards=4, parity_shards=2,
-                   storage_type='ssd', minio_login='admin', minio_password='admin', ns_name='default',
-                   ns_password='password'):
+    def s3_reserve(self, name, web_gateway_service, domain, management_network_id, size, farmer_name, zt_token,
+                   data_shards=4, parity_shards=2, storage_type='ssd', minio_login='admin', minio_password='admin',
+                   ns_name='default', ns_password='password'):
         """
         reserve s3 storage
         :param name: s3 service name
+        :param web_gateway_service: web gateway service name from zrobot
+        :param domain: the domain you want to link with this s3
         :param management_network_id: management zerotier network id
         :param size: total s3 storage size in GB
         :param farmer_name: the farmer to create the s3 on
@@ -322,6 +291,6 @@ class CapacityPlanner(JSBASE):
         }
         service = robot.services.find_or_create("github.com/threefoldtech/0-templates/s3_redundant/0.0.1", name, data)
         service.schedule_action("install").wait(die=True)
-        urls = service.schedule_action('urls').wait(die=True).result
-        # TODO: register these urls to webgateway
-        return urls
+        reverse_proxy = self.web_gateway_add_host(web_gateway_service, domain, name=name)
+        service.schedule_action("update_reverse_proxy", args={"reverse_proxy": reverse_proxy.name}).wait(die=True)
+        return

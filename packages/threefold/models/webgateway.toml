@@ -2,12 +2,5 @@
 @url = threefold.grid.webgateway
 name* = ""
 description = ""
-country = ""
-location = ""
-etcd_host = ""
-etcd_port = ""
-etcd_secret = ""
-node_id = ""
-farmer_id = (I)
-pubip4 = [] (LS)
-pubip6 = [] (LS)
+service_name = ""
+master_domain = ""
